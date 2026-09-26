@@ -1,30 +1,62 @@
 import math
+import time
 
 import numpy as np
 
+# Standardized default Kalman and dropout configuration across all applications
+DEFAULT_PROCESS_NOISE = 800.0
+DEFAULT_MEASUREMENT_NOISE = 225.0
+DEFAULT_DEAD_ZONE = 2.0
+DEFAULT_MAX_MOVEMENT = 35.0
+DEFAULT_DROPOUT_TIMEOUT_S = 0.5
+
 
 class KalmanGazeFilter:
-    """Two-dimensional constant-velocity Kalman filter for screen gaze."""
+    """Two-dimensional constant-velocity Kalman filter for screen gaze with dropout tracking."""
 
     def __init__(
         self,
-        process_noise=800.0,
-        measurement_noise=225.0,
-        dead_zone=0.0,
-        max_movement=None,
+        process_noise=DEFAULT_PROCESS_NOISE,
+        measurement_noise=DEFAULT_MEASUREMENT_NOISE,
+        dead_zone=DEFAULT_DEAD_ZONE,
+        max_movement=DEFAULT_MAX_MOVEMENT,
+        dropout_timeout=DEFAULT_DROPOUT_TIMEOUT_S,
     ):
         self.process_noise = float(process_noise)
         self.measurement_noise = float(measurement_noise)
         self.dead_zone = float(dead_zone)
-        self.max_movement = max_movement
+        self.max_movement = float(max_movement) if max_movement is not None else None
+        self.dropout_timeout = float(dropout_timeout) if dropout_timeout is not None else None
         self.state = None
         self.covariance = None
+        self.last_valid_time = None
 
     def reset(self):
         self.state = None
         self.covariance = None
+        self.last_valid_time = None
 
-    def update(self, x, y, dt=1.0 / 30.0):
+    def handle_dropout(self, current_time=None):
+        """Reset filter if duration since last valid update exceeds dropout_timeout.
+
+        Returns True if a reset occurred, False otherwise.
+        """
+        if self.last_valid_time is None or self.dropout_timeout is None:
+            return False
+        now = time.perf_counter() if current_time is None else float(current_time)
+        if (now - self.last_valid_time) > self.dropout_timeout:
+            self.reset()
+            return True
+        return False
+
+    def update(self, x, y, dt=1.0 / 30.0, current_time=None):
+        if x is None or y is None:
+            self.handle_dropout(current_time=current_time)
+            return None, None
+
+        now = time.perf_counter() if current_time is None else float(current_time)
+        self.last_valid_time = now
+
         measurement = np.array([float(x), float(y)], dtype=float)
         dt = float(np.clip(dt, 0.001, 0.2))
 

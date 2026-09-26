@@ -15,6 +15,7 @@ from mediapipe.tasks.python import vision
 
 from gaze_features import (
     FEATURE_VERSION,
+    MIN_GAZE_CONFIDENCE,
     estimate_gaze_confidence,
     extract_eye_metrics,
     get_features,
@@ -82,15 +83,22 @@ target_radius = 60
 speed_x = 4
 speed_y = 3
 
+TRACKER_DEADBAND = 2.0
+MAX_FRAME_MOVEMENT = 35.0
+DROPOUT_TIMEOUT_S = 0.5
+
 gaze_filter = KalmanGazeFilter(
     process_noise=800.0,
     measurement_noise=225.0,
-    dead_zone=3.0,
+    dead_zone=TRACKER_DEADBAND,
+    max_movement=MAX_FRAME_MOVEMENT,
+    dropout_timeout=DROPOUT_TIMEOUT_S,
 )
 
 CONCENTRATION_RADIUS = 300
-MIN_GAZE_CONFIDENCE = 0.35
 total_frames = 0
+valid_frames = 0
+dropped_frames = 0
 concentration_sum = 0.0
 distance_sum = 0.0
 
@@ -98,7 +106,7 @@ csv_file = open("concentration_session.csv", "w", newline="")
 csv_writer = csv.writer(csv_file)
 csv_writer.writerow([
     "Frame", "Target_X", "Target_Y", "Gaze_X", "Gaze_Y", "Distance",
-    "Concentration_Percentage"
+    "Concentration_Percentage", "Confidence", "Status"
 ])
 
 start_time = time.perf_counter()
@@ -132,6 +140,8 @@ try:
         gaze_y = None
         distance = None
         concentration = 0.0
+        valid_prediction = False
+        gaze_confidence = 0.0
 
         if result.face_landmarks:
             landmarks = result.face_landmarks[0]
@@ -164,13 +174,31 @@ try:
                     if distance <= CONCENTRATION_RADIUS:
                         proximity = 1.0 - (distance / CONCENTRATION_RADIUS)
                         concentration = (proximity ** 0.65) * 100.0
-                    total_frames += 1
-                    concentration_sum += concentration
-                    distance_sum += distance
-                    csv_writer.writerow([
-                        total_frames, target_x, target_y, gaze_x, gaze_y,
-                        distance, concentration
-                    ])
+                    valid_prediction = True
+
+        total_frames += 1
+
+        if not valid_prediction:
+            gaze_filter.handle_dropout()
+            dropped_frames += 1
+            status_text = "DROPPED"
+        else:
+            valid_frames += 1
+            concentration_sum += concentration
+            distance_sum += distance
+            status_text = "VALID"
+
+        csv_writer.writerow([
+            total_frames,
+            target_x,
+            target_y,
+            gaze_x if gaze_x is not None else "",
+            gaze_y if gaze_y is not None else "",
+            f"{distance:.1f}" if distance is not None else "",
+            f"{concentration:.1f}",
+            f"{gaze_confidence:.2f}",
+            status_text,
+        ])
 
         cv2.circle(canvas, (target_x, target_y), target_radius, (0, 255, 0), -1)
         if gaze_x is not None and gaze_y is not None:
@@ -178,6 +206,11 @@ try:
             cv2.line(canvas, (target_x, target_y), (gaze_x, gaze_y), (255, 255, 255), 2)
 
         cv2.putText(canvas, f"Concentration: {concentration:.1f}%", (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3)
+        if valid_prediction:
+            cv2.putText(canvas, f"Confidence: {gaze_confidence * 100:.0f}%", (50, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+        else:
+            cv2.putText(canvas, "TRACKING LOST / LOW CONFIDENCE", (50, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+
         cv2.putText(canvas, "Follow the moving target using your eyes", (50, SCREEN_HEIGHT - 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
         cv2.imshow(WINDOW_NAME, canvas)
         if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -188,14 +221,18 @@ finally:
     csv_file.close()
     cv2.destroyAllWindows()
     if total_frames > 0:
-        average_concentration = concentration_sum / total_frames
-        average_distance = distance_sum / total_frames
+        average_concentration = (concentration_sum / valid_frames) if valid_frames > 0 else 0.0
+        average_distance = (distance_sum / valid_frames) if valid_frames > 0 else 0.0
+        dropout_rate = (dropped_frames / total_frames) * 100.0
+        valid_rate = (valid_frames / total_frames) * 100.0
         print()
         print("==============================================")
         print("SESSION COMPLETE")
         print("==============================================")
-        print(f"Frames analyzed: {total_frames}")
-        print(f"Average concentration: {average_concentration:.2f}%")
-        print(f"Average gaze-target distance: {average_distance:.2f}px")
+        print(f"Total frames processed: {total_frames}")
+        print(f"Valid gaze frames:      {valid_frames} ({valid_rate:.1f}%)")
+        print(f"Dropped/uncertain:      {dropped_frames} ({dropout_rate:.1f}%)")
+        print(f"Average concentration:  {average_concentration:.2f}%")
+        print(f"Average gaze distance:  {average_distance:.2f}px")
         print("CSV saved as: concentration_session.csv")
         print("==============================================")

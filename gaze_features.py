@@ -2,6 +2,7 @@ import numpy as np
 
 
 FEATURE_VERSION = "v5_eye_features_4"
+MIN_GAZE_CONFIDENCE = 0.35
 
 
 LEFT_IRIS = [468, 469, 470, 471, 472]

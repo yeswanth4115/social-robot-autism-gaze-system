@@ -129,6 +129,7 @@ class GazeSmoother:
 
     def update(self, raw_x, raw_y):
         if raw_x is None or raw_y is None:
+            self.filter.handle_dropout()
             return None, None
 
         raw_x = float(raw_x) + GAZE_X_OFFSET_PX
@@ -482,6 +483,8 @@ def run_experiment():
 
                 if raw_x is None or raw_y is None:
                     invalid_gaze_samples += 1
+                    smoother.update(None, None)
+                    gaze_x, gaze_y = None, None
                     canvas = np.zeros((SCREEN_HEIGHT, SCREEN_WIDTH, 3), dtype=np.uint8)
                     draw_scene(canvas, target_zone_map, target_index, gaze_x, gaze_y)
                     cv2.imshow(WINDOW_NAME, canvas)

@@ -44,17 +44,7 @@ GAZE_X_OFFSET_PX = -8
 GAZE_Y_OFFSET_PX = 0
 TRACKER_DEADBAND = 2.0
 MAX_FRAME_MOVEMENT = 35
-features = get_features(result.face_landmarks[0], matrix)
-
-if features is not None:
-    pred = model.predict(np.array(features).reshape(1, -1))[0]
-    raw_x, raw_y = float(pred[0]), float(pred[1])
-
-    if affine_correction is not None:
-        corrected = np.array([raw_x, raw_y, 1.0]) @ affine_correction
-        raw_x, raw_y = float(corrected[0]), float(corrected[1])
-
-    confidence = None
+MIN_GAZE_CONFIDENCE = 0.35
 
 # Proximity-based concentration scoring (same idea as the first game)
 # A gaze point does not need to land exactly on the target.
@@ -147,6 +137,7 @@ class GazeSmoother:
 
     def update(self, raw_x, raw_y):
         if raw_x is None or raw_y is None:
+            self.filter.handle_dropout()
             return None, None
 
         raw_x = float(raw_x) + GAZE_X_OFFSET_PX
@@ -525,6 +516,8 @@ def run_experiment():
 
                 if raw_x is None or raw_y is None:
                     invalid_gaze_samples += 1
+                    smoother.update(None, None)
+                    gaze_x, gaze_y = None, None
                     canvas = np.zeros((SCREEN_HEIGHT, SCREEN_WIDTH, 3), dtype=np.uint8)
                     draw_scene(canvas, target_zone_map, target_index, gaze_x, gaze_y)
                     cv2.imshow(WINDOW_NAME, canvas)

@@ -16,7 +16,12 @@ import tkinter as tk
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-from gaze_features import FEATURE_VERSION, get_features
+from gaze_features import (
+    FEATURE_VERSION,
+    estimate_gaze_confidence,
+    extract_eye_metrics,
+    get_features,
+)
 from gaze_kalman import KalmanGazeFilter
 
 # ==========================================================
@@ -39,6 +44,7 @@ GAZE_X_OFFSET_PX = -8
 GAZE_Y_OFFSET_PX = 0
 TRACKER_DEADBAND = 2.0
 MAX_FRAME_MOVEMENT = 35
+MIN_GAZE_CONFIDENCE = 0.35
 
 # Proximity-based concentration scoring (same idea as the first game)
 # A gaze point does not need to land exactly on the target.
@@ -343,7 +349,7 @@ def process_gaze(frame, detector, timestamp_ms, model, use_head_pose=False):
 
     raw_x = None
     raw_y = None
-    confidence = None
+    confidence = 0.0
 
     if result.face_landmarks:
         matrix = (
@@ -352,17 +358,17 @@ def process_gaze(frame, detector, timestamp_ms, model, use_head_pose=False):
             else None
         )
         features = get_features(result.face_landmarks[0], matrix)
-        if features is not None:
-            pred = model.predict(np.array(features).reshape(1, -1))[0]
-            raw_x, raw_y = float(pred[0]), float(pred[1])
+        metrics = extract_eye_metrics(result.face_landmarks[0], matrix)
 
-            if affine_correction is not None:
-                corrected = np.array([raw_x, raw_y, 1.0]) @ affine_correction
-                raw_x, raw_y = float(corrected[0]), float(corrected[1])
+        if features is not None and metrics is not None:
+            confidence = estimate_gaze_confidence(metrics)
+            if confidence >= MIN_GAZE_CONFIDENCE:
+                pred = model.predict(np.array(features).reshape(1, -1))[0]
+                raw_x, raw_y = float(pred[0]), float(pred[1])
 
-            # Optional confidence signal if the model or face tracker exposes it. Here it is not available,
-            # so we leave confidence as None and log blank values in the CSV.
-            confidence = None
+                if affine_correction is not None:
+                    corrected = np.array([raw_x, raw_y, 1.0]) @ affine_correction
+                    raw_x, raw_y = float(corrected[0]), float(corrected[1])
 
     return result, raw_x, raw_y, confidence
 

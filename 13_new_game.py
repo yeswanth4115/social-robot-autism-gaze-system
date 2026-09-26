@@ -44,7 +44,17 @@ GAZE_X_OFFSET_PX = -8
 GAZE_Y_OFFSET_PX = 0
 TRACKER_DEADBAND = 2.0
 MAX_FRAME_MOVEMENT = 35
-MIN_GAZE_CONFIDENCE = 0.35
+features = get_features(result.face_landmarks[0], matrix)
+
+if features is not None:
+    pred = model.predict(np.array(features).reshape(1, -1))[0]
+    raw_x, raw_y = float(pred[0]), float(pred[1])
+
+    if affine_correction is not None:
+        corrected = np.array([raw_x, raw_y, 1.0]) @ affine_correction
+        raw_x, raw_y = float(corrected[0]), float(corrected[1])
+
+    confidence = None
 
 # Proximity-based concentration scoring (same idea as the first game)
 # A gaze point does not need to land exactly on the target.

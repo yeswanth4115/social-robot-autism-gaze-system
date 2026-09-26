@@ -1,241 +1,84 @@
-import cv2
-import mediapipe as mp
-import numpy as np
-import tkinter as tk
+import os
 import joblib
-import json
-import time
-import csv
-import math
+import numpy as np
+import pandas as pd
 
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
+VALIDATION_FILE = "gaze_validation.csv"
+MODEL_FILE = "gaze_model.pkl"
 
-from gaze_features import get_features, FEATURE_VERSION
+def analyze_validation(val_df, model):
+    ignore_cols = {'target_x', 'target_y', 'point_id', 'timestamp', 'frame_idx', 'accepted'}
+    feature_cols = [c for c in val_df.columns if c not in ignore_cols]
+    
+    X_val = val_df[feature_cols].values
+    y_true = val_df[['target_x', 'target_y']].values
+    
+    y_pred = model.predict(X_val)
+    
+    # Calculate directional errors
+    dx = y_pred[:, 0] - y_true[:, 0]
+    dy = y_pred[:, 1] - y_true[:, 1]
+    euclidean_errors = np.linalg.norm(y_pred - y_true, axis=1)
+    
+    val_df['pred_x'] = y_pred[:, 0]
+    val_df['pred_y'] = y_pred[:, 1]
+    val_df['err_x'] = dx
+    val_df['err_y'] = dy
+    val_df['err_euclidean'] = euclidean_errors
+    
+    # Overall Performance Metrics
+    mean_err = np.mean(euclidean_errors)
+    median_err = np.median(euclidean_errors)
+    p95_err = np.percentile(euclidean_errors, 95)
+    worst_err = np.max(euclidean_errors)
+    
+    mean_x_bias = np.mean(dx)
+    mean_y_bias = np.mean(dy)
+    
+    print("=" * 60)
+    print("        INDEPENDENT SPATIAL VALIDATION REPORT")
+    print("=" * 60)
+    print(f"Total Validation Samples Evaluated : {len(val_df)}")
+    print(f"Mean Euclidean Error               : {mean_err:.2f} px")
+    print(f"Median Error                       : {median_err:.2f} px")
+    print(f"95th Percentile Error              : {p95_err:.2f} px")
+    print(f"Worst Frame Error                  : {worst_err:.2f} px")
+    print(f"Overall Systematic Bias (dx, dy)   : ({mean_x_bias:+.2f} px, {mean_y_bias:+.2f} px)")
+    
+    # Accuracy Threshold Bins
+    print("\n--- Accuracy Threshold Distribution ---")
+    for threshold in [50, 100, 150, 200]:
+        pct = (np.sum(euclidean_errors <= threshold) / len(euclidean_errors)) * 100
+        print(f"Percentage within < {threshold:3d} px : {pct:6.2f}%")
+        
+    # Spatial Bias Breakdown by Screen Rows (Vertical Drift Analysis)
+    print("\n--- Vertical Bias Breakdown by Target Y Row ---")
+    print(f"{'Target Y':<10} | {'Mean Pred Y':<12} | {'Mean Y Error':<14} | {'Sample Count':<12}")
+    print("-" * 56)
+    for target_y, group in val_df.groupby('target_y'):
+        avg_pred_y = group['pred_y'].mean()
+        avg_err_y = group['err_y'].mean()
+        print(f"{target_y:<10.0f} | {avg_pred_y:<12.1f} | {avg_err_y:<+14.1f} | {len(group):<12d}")
 
+    # Spatial Bias Breakdown by Screen Columns (Horizontal Shift Analysis)
+    print("\n--- Horizontal Bias Breakdown by Target X Column ---")
+    print(f"{'Target X':<10} | {'Mean Pred X':<12} | {'Mean X Error':<14} | {'Sample Count':<12}")
+    print("-" * 56)
+    for target_x, group in val_df.groupby('target_x'):
+        avg_pred_x = group['pred_x'].mean()
+        avg_err_x = group['err_x'].mean()
+        print(f"{target_x:<10.0f} | {avg_pred_x:<12.1f} | {avg_err_x:<+14.1f} | {len(group):<12d}")
 
-# ==========================================================
-# 1. LOAD MODEL + METADATA, CHECK COMPATIBILITY
-# ==========================================================
+def main():
+    if not os.path.exists(MODEL_FILE):
+        raise FileNotFoundError(f"Model file not found: {MODEL_FILE}")
+    if not os.path.exists(VALIDATION_FILE):
+        raise FileNotFoundError(f"Validation dataset not found: {VALIDATION_FILE}")
+        
+    model = joblib.load(MODEL_FILE)
+    val_df = pd.read_csv(VALIDATION_FILE)
+    
+    analyze_validation(val_df, model)
 
-with open("gaze_model_metadata.json") as f:
-    metadata = json.load(f)
-
-if metadata["feature_version"] != FEATURE_VERSION:
-    print("ERROR: This model was trained with feature scheme "
-          f"'{metadata['feature_version']}', but this script is using "
-          f"'{FEATURE_VERSION}'. Re-run calibration before validating — "
-          "otherwise the numbers below are meaningless.")
-    exit()
-
-model = joblib.load("gaze_model.pkl")
-USE_HEAD_POSE = metadata["use_head_pose"]
-affine_correction = np.asarray(
-    metadata.get("affine_correction", []),
-    dtype=float,
-)
-if affine_correction.shape != (3, 2):
-    affine_correction = None
-
-print(f"Loaded model: {metadata['model_type']}  "
-      f"(calibration CV error: {metadata['cv_mean_error_px']:.1f}px)")
-
-
-# ==========================================================
-# 2. SCREEN SIZE
-# ==========================================================
-
-root = tk.Tk()
-root.withdraw()
-SCREEN_WIDTH = root.winfo_screenwidth()
-SCREEN_HEIGHT = root.winfo_screenheight()
-root.destroy()
-
-if (SCREEN_WIDTH, SCREEN_HEIGHT) != (metadata["screen_width"], metadata["screen_height"]):
-    print("WARNING: Screen resolution differs from calibration session "
-          f"({metadata['screen_width']}x{metadata['screen_height']} -> "
-          f"{SCREEN_WIDTH}x{SCREEN_HEIGHT}). Results won't be comparable.")
-
-
-# ==========================================================
-# 3. MEDIAPIPE
-# ==========================================================
-
-MODEL_PATH = "models/face_landmarker.task"
-
-base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
-
-options = vision.FaceLandmarkerOptions(
-    base_options=base_options,
-    running_mode=vision.RunningMode.VIDEO,
-    num_faces=1,
-    min_face_detection_confidence=0.5,
-    min_face_presence_confidence=0.5,
-    min_tracking_confidence=0.5,
-    output_facial_transformation_matrixes=USE_HEAD_POSE,
-)
-
-detector = vision.FaceLandmarker.create_from_options(options)
-
-
-def extract(result):
-    if not result.face_landmarks:
-        return None
-    matrix = None
-    if USE_HEAD_POSE and result.facial_transformation_matrixes:
-        matrix = result.facial_transformation_matrixes[0]
-    return get_features(result.face_landmarks[0], matrix)
-
-
-# ==========================================================
-# 4. HELD-OUT TEST GRID
-# ==========================================================
-# Offset from the calibration grid so these points were never seen
-# during training — this is what makes the error number honest.
-# A midpoint grid between the calibration targets. The geometry is
-# loaded from metadata so validation follows the latest calibration.
-
-grid_rows = metadata.get("grid_rows", 5)
-grid_cols = metadata.get("grid_cols", 5)
-margin_x = metadata.get("margin_x", int(SCREEN_WIDTH * 0.08))
-margin_y = metadata.get("margin_y", int(SCREEN_HEIGHT * 0.08))
-
-cal_xs = np.linspace(margin_x, SCREEN_WIDTH - margin_x, grid_cols)
-cal_ys = np.linspace(margin_y, SCREEN_HEIGHT - margin_y, grid_rows)
-
-test_xs = (cal_xs[:-1] + cal_xs[1:]) / 2   # midpoints -> interior, unseen
-test_ys = (cal_ys[:-1] + cal_ys[1:]) / 2
-
-targets = [(int(x), int(y)) for y in test_ys for x in test_xs]
-
-
-# ==========================================================
-# 5. CAMERA + WINDOW
-# ==========================================================
-
-cap = cv2.VideoCapture(0)
-if not cap.isOpened():
-    print("ERROR: Camera could not be opened.")
-    detector.close()
-    exit()
-
-WINDOW_NAME = "Gaze Validation"
-cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-
-
-def bail_out():
-    cap.release()
-    detector.close()
-    cv2.destroyAllWindows()
-    exit()
-
-
-# ==========================================================
-# 6. RUN VALIDATION
-# ==========================================================
-
-results = []
-timestamp_ms = 0
-
-print()
-print("==========================================")
-print(f"GAZE VALIDATION  ({len(targets)} held-out points)")
-print("==========================================")
-time.sleep(2)
-
-for point_idx, (target_x, target_y) in enumerate(targets):
-
-    print(f"Testing point {point_idx + 1}/{len(targets)}")
-
-    start = time.time()
-    while time.time() - start < 0.8:
-        canvas = np.zeros((SCREEN_HEIGHT, SCREEN_WIDTH, 3), dtype=np.uint8)
-        cv2.circle(canvas, (target_x, target_y), 15, (0, 0, 255), -1)
-        cv2.putText(canvas, f"Point {point_idx + 1}/{len(targets)}", (30, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.imshow(WINDOW_NAME, canvas)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            bail_out()
-
-    predictions = []
-    start = time.time()
-    while time.time() - start < 2.0:
-        ret, frame = cap.read()
-        if not ret:
-            continue
-
-        frame = cv2.flip(frame, 1)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-
-        result = detector.detect_for_video(mp_image, timestamp_ms)
-        timestamp_ms += 33
-
-        features = extract(result)
-        if features is not None:
-            pred = model.predict(np.array(features).reshape(1, -1))[0]
-            if affine_correction is not None:
-                pred = np.array(
-                    [pred[0], pred[1], 1.0]
-                ) @ affine_correction
-            px = float(np.clip(pred[0], 0, SCREEN_WIDTH - 1))
-            py = float(np.clip(pred[1], 0, SCREEN_HEIGHT - 1))
-            predictions.append((px, py))
-
-        canvas = np.zeros((SCREEN_HEIGHT, SCREEN_WIDTH, 3), dtype=np.uint8)
-        cv2.circle(canvas, (target_x, target_y), 15, (0, 0, 255), -1)
-        if predictions:
-            px, py = predictions[-1]
-            cv2.circle(canvas, (int(px), int(py)), 12, (0, 255, 0), -1)
-        cv2.imshow(WINDOW_NAME, canvas)
-
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            bail_out()
-
-    if predictions:
-        arr = np.array(predictions)
-        mean_x, mean_y = arr[:, 0].mean(), arr[:, 1].mean()
-        error_x = mean_x - target_x
-        error_y = mean_y - target_y
-        error_distance = math.hypot(error_x, error_y)
-
-        results.append([point_idx + 1, target_x, target_y, mean_x, mean_y,
-                         error_x, error_y, error_distance])
-
-        print(f"  Target=({target_x},{target_y}) "
-              f"Prediction=({mean_x:.1f},{mean_y:.1f}) "
-              f"Error={error_distance:.1f}px")
-
-
-# ==========================================================
-# 7. SAVE + SUMMARIZE
-# ==========================================================
-
-with open("gaze_validation.csv", "w", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow(["Point", "Target_X", "Target_Y", "Predicted_X", "Predicted_Y",
-                      "Error_X", "Error_Y", "Euclidean_Error"])
-    writer.writerows(results)
-
-if results:
-    errors = [row[7] for row in results]
-    mean_error = np.mean(errors)
-    median_error = np.median(errors)
-    worst = max(errors)
-
-    print()
-    print("==========================================")
-    print("VALIDATION COMPLETE (held-out points)")
-    print("==========================================")
-    print(f"Mean error:   {mean_error:.2f} px")
-    print(f"Median error: {median_error:.2f} px")
-    print(f"Worst error:  {worst:.2f} px")
-    print(f"(Calibration-time CV estimate was {metadata['cv_mean_error_px']:.1f}px "
-          "— compare these to sanity-check that CV wasn't optimistic.)")
-    print()
-    print("Results saved to: gaze_validation.csv")
-
-cv2.destroyAllWindows()
-cap.release()
-detector.close()
+if __name__ == "__main__":
+    main()

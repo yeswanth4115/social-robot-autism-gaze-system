@@ -140,6 +140,7 @@ speed_y = 3
 gaze_filter = KalmanGazeFilter(
     process_noise=800.0,
     measurement_noise=225.0,
+    dead_zone=3.0,
 )
 
 

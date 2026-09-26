@@ -16,7 +16,12 @@ import tkinter as tk
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-from gaze_features import FEATURE_VERSION, get_features
+from gaze_features import (
+    FEATURE_VERSION,
+    estimate_gaze_confidence,
+    extract_eye_metrics,
+    get_features,
+)
 from gaze_kalman import KalmanGazeFilter
 
 # ==========================================================
@@ -39,6 +44,7 @@ GAZE_X_OFFSET_PX = -8
 GAZE_Y_OFFSET_PX = 0
 TRACKER_DEADBAND = 2.0
 MAX_FRAME_MOVEMENT = 35
+MIN_GAZE_CONFIDENCE = 0.35
 
 # ==========================================================
 # SCREEN / MODEL SETUP
@@ -310,7 +316,7 @@ def draw_scene(canvas, target_zones, selected_index, gaze_x=None, gaze_y=None):
 
 
 def process_gaze(frame, detector, timestamp_ms, model, use_head_pose=False):
-    """Return raw gaze coordinates plus smoothed gaze values, or None if invalid."""
+    """Return gaze coordinates and a quality-gated confidence value if the sample is valid."""
     frame = cv2.flip(frame, 1)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
@@ -318,7 +324,7 @@ def process_gaze(frame, detector, timestamp_ms, model, use_head_pose=False):
 
     raw_x = None
     raw_y = None
-    confidence = None
+    confidence = 0.0
 
     if result.face_landmarks:
         matrix = (
@@ -326,18 +332,18 @@ def process_gaze(frame, detector, timestamp_ms, model, use_head_pose=False):
             if (use_head_pose and result.facial_transformation_matrixes)
             else None
         )
+        metrics = extract_eye_metrics(result.face_landmarks[0], matrix)
         features = get_features(result.face_landmarks[0], matrix)
-        if features is not None:
-            pred = model.predict(np.array(features).reshape(1, -1))[0]
-            raw_x, raw_y = float(pred[0]), float(pred[1])
 
-            if affine_correction is not None:
-                corrected = np.array([raw_x, raw_y, 1.0]) @ affine_correction
-                raw_x, raw_y = float(corrected[0]), float(corrected[1])
+        if metrics is not None and features is not None:
+            confidence = estimate_gaze_confidence(metrics)
+            if confidence >= MIN_GAZE_CONFIDENCE:
+                pred = model.predict(np.array(features).reshape(1, -1))[0]
+                raw_x, raw_y = float(pred[0]), float(pred[1])
 
-            # Optional confidence signal if the model or face tracker exposes it. Here it is not available,
-            # so we leave confidence as None and log blank values in the CSV.
-            confidence = None
+                if affine_correction is not None:
+                    corrected = np.array([raw_x, raw_y, 1.0]) @ affine_correction
+                    raw_x, raw_y = float(corrected[0]), float(corrected[1])
 
     return result, raw_x, raw_y, confidence
 
@@ -352,16 +358,21 @@ def log_summary(results):
         print("No trials were completed.")
         return
 
-    latencies = [r["target_acquisition_latency_ms"] for r in results if r["successful_acquisition"]]
+    latencies = [r["target_acquisition_latency_ms"] for r in results if r["successful_acquisition"] and r["target_acquisition_latency_ms"] is not None]
     fixation_ms = [r["fixation_duration_ms"] for r in results if r["successful_acquisition"]]
     variability = [r["gaze_variability_x"] for r in results if r["gaze_variability_x"] is not None]
     distractor_total = sum(int(r["number_of_distractor_entries"]) for r in results)
+    valid_tracking = [
+        (r["valid_gaze_samples"] / r["total_gaze_samples"]) if r["total_gaze_samples"] else 0.0
+        for r in results
+    ]
 
     success_rate = (sum(1 for r in results if r["successful_acquisition"]) / len(results)) * 100.0
     mean_latency = statistics.mean(latencies) if latencies else 0.0
     median_latency = statistics.median(latencies) if latencies else 0.0
     mean_fixation = statistics.mean(fixation_ms) if fixation_ms else 0.0
     mean_variability = statistics.mean(variability) if variability else 0.0
+    mean_valid_tracking = statistics.mean(valid_tracking) if valid_tracking else 0.0
 
     print("\n====================================")
     print("SESSION SUMMARY")
@@ -373,6 +384,7 @@ def log_summary(results):
     print(f"Mean fixation duration: {mean_fixation:.1f} ms")
     print(f"Target acquisition success rate: {success_rate:.1f}%")
     print(f"Mean gaze variability: {mean_variability:.2f} px")
+    print(f"Mean valid tracking percentage: {mean_valid_tracking * 100.0:.1f}%")
     print(f"Distractor fixation count: {distractor_total}")
 
 

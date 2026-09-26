@@ -45,6 +45,8 @@ MAX_FRAME_MOVEMENT = 35
 CONCENTRATION_RADIUS_MULTIPLIER = 3.0
 CONCENTRATION_SCORE_EXPONENT = 0.65
 MIN_CONCENTRATION_FOR_FIXATION = 0.20
+FIXATION_EXIT_THRESHOLD = 0.12
+MAX_FIXATION_LOSS_MS = 200.0
 
 # ==========================================================
 # SCREEN / MODEL SETUP
@@ -480,6 +482,8 @@ def run_experiment():
             confidence_values = []
             inside_target_zone_for_ms = 0.0
             concentration_score = 0.0
+            fixation_armed = False
+            fixation_loss_ms = 0.0
             mean_target_proximity_sum = 0.0
             max_target_proximity = 0.0
             concentration_samples = 0
@@ -541,28 +545,32 @@ def run_experiment():
 
                 in_selected = target_score >= MIN_CONCENTRATION_FOR_FIXATION
 
-                if in_selected:
-                    if not fixation_armed:
-                        fixation_armed = True
-                        if first_gaze_entry_timestamp is None:
-                            first_gaze_entry_timestamp = time.perf_counter() * 1000.0
-                        target_entry_count += 1
+                if in_selected and not fixation_armed:
+                    fixation_armed = True
+                    fixation_loss_ms = 0.0
+                    if first_gaze_entry_timestamp is None:
+                        first_gaze_entry_timestamp = time.perf_counter() * 1000.0
+                    target_entry_count += 1
 
-                    # Instead of binary inside/outside timing, nearby gaze
-                    # contributes proportionally to fixation.
+                if fixation_armed and target_score >= FIXATION_EXIT_THRESHOLD:
+                    fixation_loss_ms = 0.0
+                    # Nearby gaze contributes proportionally to fixation.
                     inside_target_zone_for_ms += 33.0 * target_score
                     mean_target_proximity_sum += target_score
                     concentration_samples += 1
                     max_target_proximity = max(max_target_proximity, target_score)
                 else:
-                    fixation_armed = False
-                    inside_target_zone_for_ms = 0.0
+                    fixation_loss_ms += 33.0
+                    if fixation_loss_ms > MAX_FIXATION_LOSS_MS:
+                        fixation_armed = False
+                        inside_target_zone_for_ms = 0.0
+                        fixation_loss_ms = 0.0
 
                 if strongest_distractor_score >= MIN_CONCENTRATION_FOR_FIXATION:
                     distractor_entry_count += 1
 
                 # 400 ms of WEIGHTED fixation is enough for acquisition.
-                if in_selected and inside_target_zone_for_ms >= MIN_FIXATION_MS:
+                if fixation_armed and inside_target_zone_for_ms >= MIN_FIXATION_MS:
                     if not successful_acquisition:
                         fixation_start_timestamp = first_gaze_entry_timestamp
                         fixation_duration_ms = int(inside_target_zone_for_ms)

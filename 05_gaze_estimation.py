@@ -16,6 +16,7 @@ from gaze_features import (
     extract_eye_metrics,
     get_features,
 )
+from gaze_calibration import gaze_coordinates, transform_gaze_coordinates
 from gaze_kalman import KalmanGazeFilter
 
 
@@ -41,16 +42,27 @@ if metadata.get("feature_version") != FEATURE_VERSION:
     )
 
 model = joblib.load(MODEL_FILE)
+calibration_method = metadata.get("calibration_method")
+homography = None
+if calibration_method == "four_point_homography":
+    if not isinstance(model, dict) or model.get("calibration_method") != calibration_method:
+        raise RuntimeError("Four-point calibration model is missing or invalid.")
+    homography = np.asarray(model.get("homography"), dtype=float)
+    if homography.shape != (3, 3) or not np.all(np.isfinite(homography)):
+        raise RuntimeError("Four-point calibration mapping is invalid.")
+
 use_head_pose = metadata.get(
     "use_head_pose",
     False,
 )
-affine_correction = np.asarray(
-    metadata.get("affine_correction", []),
-    dtype=float,
-)
-if affine_correction.shape != (3, 2):
-    affine_correction = None
+affine_correction = None
+if homography is None:
+    affine_correction = np.asarray(
+        metadata.get("affine_correction", []),
+        dtype=float,
+    )
+    if affine_correction.shape != (3, 2):
+        affine_correction = None
 
 
 root = tk.Tk()
@@ -147,10 +159,13 @@ print("==============================================")
 print("GAZE ESTIMATION")
 print("==============================================")
 print("Model:", metadata.get("model_type"))
-print(
-    "Calibration mean error:",
-    f"{metadata.get('cv_mean_error_px', 0):.1f}px",
-)
+if "cv_mean_error_px" in metadata:
+    print(
+        "Calibration mean error:",
+        f"{metadata['cv_mean_error_px']:.1f}px",
+    )
+elif calibration_method == "four_point_homography":
+    print("Calibration quality: four-point mapping fitted; independent error not measured.")
 print(
     "Screen:",
     SCREEN_WIDTH,
@@ -230,14 +245,19 @@ try:
                         dtype=float,
                     ).reshape(1, -1)
 
-                    prediction = model.predict(
-                        feature_array
-                    )[0]
+                    if homography is not None:
+                        gaze_xy = gaze_coordinates(feature_array)
+                        prediction = transform_gaze_coordinates(
+                            gaze_xy,
+                            homography,
+                        )[0]
+                    else:
+                        prediction = model.predict(feature_array)[0]
 
                     raw_x = float(prediction[0])
                     raw_y = float(prediction[1])
 
-                    if affine_correction is not None:
+                    if homography is None and affine_correction is not None:
                         corrected = np.array(
                             [raw_x, raw_y, 1.0]
                         ) @ affine_correction

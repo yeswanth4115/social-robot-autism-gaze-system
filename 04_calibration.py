@@ -11,27 +11,13 @@ import tkinter as tk
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-from sklearn.base import clone
-from sklearn.linear_model import Ridge
-from sklearn.kernel_ridge import KernelRidge
-from sklearn.model_selection import LeaveOneGroupOut
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import (
-    PolynomialFeatures,
-    StandardScaler,
-)
-from sklearn.svm import SVR
-from sklearn.multioutput import MultiOutputRegressor
-
 from gaze_features import (
     FEATURE_VERSION,
     feature_names,
     get_features,
 )
+from gaze_calibration import fit_four_point_homography
 
-
-GRID_ROWS = 5
-GRID_COLS = 10
 
 MARGIN_X = 100
 MARGIN_Y = 80
@@ -40,7 +26,6 @@ SETTLE_TIME = 1.5
 COLLECT_TIME = 3.0
 
 MIN_SAMPLES_PER_POINT = 20
-SAMPLES_PER_POINT = 45
 MAD_THRESHOLD = 3.5
 MAX_NORMALIZED_OFFSET = 2.0
 MAX_HEAD_POSE_RAD = 1.5
@@ -63,22 +48,11 @@ root.destroy()
 
 
 def generate_targets():
-    x_values = np.linspace(
-        MARGIN_X,
-        SCREEN_WIDTH - MARGIN_X,
-        GRID_COLS,
-    )
-
-    y_values = np.linspace(
-        MARGIN_Y,
-        SCREEN_HEIGHT - MARGIN_Y,
-        GRID_ROWS,
-    )
-
     return [
-        (int(round(x)), int(round(y)))
-        for y in y_values
-        for x in x_values
+        (MARGIN_X, MARGIN_Y),
+        (SCREEN_WIDTH - MARGIN_X, MARGIN_Y),
+        (SCREEN_WIDTH - MARGIN_X, SCREEN_HEIGHT - MARGIN_Y),
+        (MARGIN_X, SCREEN_HEIGHT - MARGIN_Y),
     ]
 
 
@@ -169,15 +143,6 @@ def reject_outliers(samples):
     return values[keep_mask]
 
 
-def calculate_error(actual, predicted):
-    return np.sqrt(
-        np.sum(
-            (predicted - actual) ** 2,
-            axis=1,
-        )
-    )
-
-
 def is_valid_feature_vector(values):
     feature_vector = np.asarray(values, dtype=float)
     if feature_vector.ndim != 1 or feature_vector.size not in (4, 7):
@@ -191,45 +156,6 @@ def is_valid_feature_vector(values):
     return True
 
 
-def evaluate_model(model, features, targets, groups):
-    splitter = LeaveOneGroupOut()
-    errors = []
-
-    for train_index, test_index in splitter.split(
-        features,
-        targets,
-        groups,
-    ):
-        fold_model = clone(model)
-
-        fold_model.fit(
-            features[train_index],
-            targets[train_index],
-        )
-
-        prediction = fold_model.predict(
-            features[test_index]
-        )
-
-        errors.extend(
-            calculate_error(
-                targets[test_index],
-                prediction,
-            ).tolist()
-        )
-
-    errors = np.asarray(
-        errors,
-        dtype=float,
-    )
-
-    return {
-        "mean": float(np.mean(errors)),
-        "median": float(np.median(errors)),
-        "worst": float(np.max(errors)),
-    }
-
-
 targets = generate_targets()
 
 print()
@@ -238,8 +164,7 @@ print("GAZE CALIBRATION")
 print("==============================================")
 print(f"Screen: {SCREEN_WIDTH} x {SCREEN_HEIGHT}")
 print(f"Calibration points: {len(targets)}")
-print("Keep your head still.")
-print("Move only your eyes.")
+print("Look at each corner target, keeping your head still.")
 print("Press Q to stop.")
 print()
 
@@ -412,10 +337,7 @@ try:
 
         # Use one robust feature vector per target. This prevents many
         # adjacent frames from letting the model memorize camera noise.
-        point_feature = np.median(
-            accepted[-SAMPLES_PER_POINT:],
-            axis=0,
-        )
+        point_feature = np.median(accepted, axis=0)
         features_all.append(point_feature)
         targets_all.append([target_x, target_y])
         groups_all.append(point_index)
@@ -455,10 +377,10 @@ valid_points = len(
     np.unique(groups_all)
 )
 
-if valid_points < 15:
+if valid_points != 4:
     raise RuntimeError(
-        "Too few valid calibration points. "
-        "Improve lighting and camera position."
+        f"Four valid calibration points are required; collected {valid_points}. "
+        "Improve lighting and camera position, then retry."
     )
 
 expected_features = len(
@@ -473,119 +395,16 @@ if features_all.shape[1] != expected_features:
     )
 
 
-models = {
-    "ridge_linear": make_pipeline(
-        StandardScaler(),
-        Ridge(alpha=0.5),
-    ),
-
-    "ridge_polynomial": make_pipeline(
-        PolynomialFeatures(
-            degree=2,
-            include_bias=False,
-        ),
-        StandardScaler(),
-        Ridge(alpha=1.0),
-    ),
-
-    "svr_rbf": make_pipeline(
-        StandardScaler(),
-        MultiOutputRegressor(
-            SVR(
-                kernel="rbf",
-                C=100.0,
-                epsilon=0.01,
-            )
-        ),
-    ),
-
-    "kernel_ridge_rbf": make_pipeline(
-        StandardScaler(),
-        KernelRidge(
-            kernel="rbf",
-            alpha=0.1,
-            gamma=2.0,
-        ),
-    ),
-}
-
-
-print()
-print("==============================================")
-print("MODEL EVALUATION")
-print("==============================================")
-
-scores = {}
-
-for name, candidate in models.items():
-    result = evaluate_model(
-        candidate,
-        features_all,
-        targets_all,
-        groups_all,
-    )
-
-    scores[name] = result
-
-    print(
-        f"{name}: "
-        f"mean={result['mean']:.1f}px, "
-        f"median={result['median']:.1f}px, "
-        f"worst={result['worst']:.1f}px"
-    )
-
-
-best_name = min(
-    scores,
-    key=lambda name: scores[name]["mean"],
-)
-
-final_model = models[best_name]
-
-final_model.fit(
+homography = fit_four_point_homography(
     features_all,
     targets_all,
-)
-
-# Learn a simple screen-space correction from point-held-out predictions.
-# Using out-of-fold predictions avoids fitting the correction to its labels.
-oof_predictions = np.zeros_like(targets_all, dtype=float)
-
-for train_index, test_index in LeaveOneGroupOut().split(
-    features_all,
-    targets_all,
-    groups_all,
-):
-    fold_model = clone(models[best_name])
-    fold_model.fit(
-        features_all[train_index],
-        targets_all[train_index],
-    )
-    oof_predictions[test_index] = fold_model.predict(
-        features_all[test_index]
-    )
-
-affine_inputs = np.column_stack(
-    [
-        oof_predictions[:, 0],
-        oof_predictions[:, 1],
-        np.ones(len(oof_predictions)),
-    ]
-)
-affine_correction, _, _, _ = np.linalg.lstsq(
-    affine_inputs,
-    targets_all,
-    rcond=None,
-)
-
-corrected_oof = affine_inputs @ affine_correction
-corrected_errors = calculate_error(
-    targets_all,
-    corrected_oof,
 )
 
 joblib.dump(
-    final_model,
+    {
+        "calibration_method": "four_point_homography",
+        "homography": homography,
+    },
     "gaze_model.pkl",
 )
 
@@ -621,16 +440,6 @@ with open(
         )
 
 
-mean_error_px = float(scores[best_name]["mean"])
-median_error_px = float(scores[best_name]["median"])
-quality_label = (
-    "GOOD"
-    if valid_points >= 20 and median_error_px <= 150
-    else "MODERATE"
-    if valid_points >= 12 and median_error_px <= 250
-    else "LOW"
-)
-
 metadata = {
     "feature_version": FEATURE_VERSION,
     "feature_names": feature_names(USE_HEAD_POSE),
@@ -640,26 +449,15 @@ metadata = {
     "use_head_pose": USE_HEAD_POSE,
     "participant_id": CALIBRATION_PARTICIPANT_ID,
     "session_id": CALIBRATION_SESSION_ID,
-    "calibration_quality": quality_label,
-    "calibration_quality_threshold_px": 150.0,
-    "model_type": best_name,
-    "cv_mean_error_px": mean_error_px,
-    "cv_median_error_px": median_error_px,
-    "cv_worst_error_px": scores[best_name]["worst"],
-    "cv_corrected_mean_error_px": float(np.mean(corrected_errors)),
-    "cv_corrected_median_error_px": float(np.median(corrected_errors)),
-    "cv_all_models_px": scores,
-    "affine_correction": affine_correction.tolist(),
+    "model_type": "four_point_homography",
     "screen_width": SCREEN_WIDTH,
     "screen_height": SCREEN_HEIGHT,
-    "grid_rows": GRID_ROWS,
-    "grid_cols": GRID_COLS,
     "margin_x": MARGIN_X,
     "margin_y": MARGIN_Y,
     "n_calibration_points": valid_points,
     "n_samples": int(len(features_all)),
-    "calibration_method": "robust_median_per_point",
-    "quality_notes": "Stable calibration samples were filtered to reject invalid normalized eye geometry and head-pose outliers.",
+    "calibration_method": "four_point_homography",
+    "quality_notes": "Four corner targets are fitted with a projective mapping from the averaged binocular gaze features.",
 }
 
 with open(
@@ -677,18 +475,7 @@ print()
 print("==============================================")
 print("CALIBRATION COMPLETE")
 print("==============================================")
-print("Best model:", best_name)
-print(
-    f"Mean error: "
-    f"{scores[best_name]['mean']:.1f}px"
-)
-print(
-    f"Median error: "
-    f"{scores[best_name]['median']:.1f}px"
-)
-print(
-    f"Worst error: "
-    f"{scores[best_name]['worst']:.1f}px"
-)
+print("Calibration method: four-point homography")
+print("Four screen-corner anchors fitted.")
 print("Saved gaze_model.pkl")
 print("Saved gaze_model_metadata.json")

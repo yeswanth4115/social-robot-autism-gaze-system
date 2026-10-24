@@ -1,0 +1,1 @@
+timestamp,elapsed_sec,target_x,target_y,target_vx,target_vy,target_speed,gaze_x,gaze_y,gaze_vx,gaze_vy,gaze_speed,dist_error_px,dist_error_deg,is_on_target,eye_state,pursuit_gain,directional_cosine,cross_correlation,optimal_lag_ms,game_mode

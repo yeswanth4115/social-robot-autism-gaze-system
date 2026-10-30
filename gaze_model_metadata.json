@@ -8,55 +8,60 @@
     ],
     "feature_count": 4,
     "use_head_pose": false,
+    "participant_id": "child_session_default",
+    "session_id": "calibration_1793236383",
+    "calibration_quality": "GOOD",
+    "calibration_quality_threshold_px": 150.0,
     "model_type": "ridge_polynomial",
-    "cv_mean_error_px": 115.77999165927277,
-    "cv_median_error_px": 107.54287593156198,
-    "cv_worst_error_px": 342.84890517252126,
-    "cv_corrected_mean_error_px": 115.50774516764307,
-    "cv_corrected_median_error_px": 109.04692516458,
+    "cv_mean_error_px": 85.374143654292,
+    "cv_median_error_px": 77.3903529600834,
+    "cv_worst_error_px": 355.906658716986,
+    "cv_corrected_mean_error_px": 87.06558364690044,
+    "cv_corrected_median_error_px": 77.58336950419142,
     "cv_all_models_px": {
         "ridge_linear": {
-            "mean": 122.43491154982848,
-            "median": 108.88365539007559,
-            "worst": 315.0840387809903
+            "mean": 88.92012390151062,
+            "median": 80.04684372197823,
+            "worst": 426.98824410643306
         },
         "ridge_polynomial": {
-            "mean": 115.77999165927277,
-            "median": 107.54287593156198,
-            "worst": 342.84890517252126
+            "mean": 85.374143654292,
+            "median": 77.3903529600834,
+            "worst": 355.906658716986
         },
         "svr_rbf": {
-            "mean": 147.25947748213682,
-            "median": 116.27389380174517,
-            "worst": 469.8800060462453
+            "mean": 125.62163281881126,
+            "median": 109.09260941833872,
+            "worst": 448.4097930267202
         },
         "kernel_ridge_rbf": {
-            "mean": 236.68121138155965,
-            "median": 186.74443519293186,
-            "worst": 1054.3802807316438
+            "mean": 236.1315146568947,
+            "median": 141.32170177156007,
+            "worst": 1003.2445617776018
         }
     },
     "affine_correction": [
         [
-            0.99138091540353,
-            0.003757036951882027
+            0.9782965077073974,
+            0.0050626381918932855
         ],
         [
-            -0.003146317250483817,
-            0.9874068700063907
+            -0.015543047218256043,
+            1.0068679711547244
         ],
         [
-            7.084940477491888,
-            2.8746161569952173
+            25.45078664164289,
+            -7.246703635926903
         ]
     ],
     "screen_width": 1536,
     "screen_height": 864,
-    "grid_rows": 5,
-    "grid_cols": 10,
     "margin_x": 100,
     "margin_y": 80,
+    "grid_rows": 5,
+    "grid_cols": 10,
     "n_calibration_points": 50,
     "n_samples": 50,
-    "calibration_method": "robust_median_per_point"
+    "calibration_method": "robust_median_per_point",
+    "quality_notes": "Calibration uses four eye-position features and excludes head-pose inputs. Stable samples are filtered per target."
 }

@@ -90,6 +90,16 @@ def test_get_features_supports_head_pose_and_compatible_output():
     ]
     assert np.all(np.isfinite(vector))
 
+    eye_only_vector = get_features(face)
+    assert eye_only_vector is not None
+    assert len(eye_only_vector) == 4
+    assert feature_names() == [
+        "left_h",
+        "left_v",
+        "right_h",
+        "right_v",
+    ]
+
 
 def test_estimate_gaze_confidence_returns_bounded_score_for_valid_metrics():
     metrics = {
@@ -201,4 +211,3 @@ def test_min_gaze_confidence_threshold_gating():
     }
     score = estimate_gaze_confidence(poor_metrics)
     assert score < MIN_GAZE_CONFIDENCE, f"Expected poor frame to be rejected by gate: {score}"
-
